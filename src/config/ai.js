@@ -12,8 +12,8 @@ class AIService {
         baseURL: "https://openrouter.ai/api/v1",
         headers: {
           "Content-Type": "application/json",
-          "HTTP-Referer":
-            process.env.HTTP_REFERER || "https://your-deployed-site.com",
+          "HTTP-Referer": "http://localhost:3000" ||
+            process.env.HTTP_REFERER ,
         },
       },
     };
