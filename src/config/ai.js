@@ -12,27 +12,37 @@ class AIService {
         baseURL: "https://openrouter.ai/api/v1",
         headers: {
           "Content-Type": "application/json",
-          "HTTP-Referer": "http://localhost:3000" ||
-            process.env.HTTP_REFERER ,
+          "HTTP-Referer": process.env.HTTP_REFERER || "http://localhost:3000",
         },
       },
     };
+
+    // Default model limits (approximate)
+    this.modelLimits = {
+      "anthropic/claude-3.5-sonnet": 200000,
+      "gpt-4o-mini": 128000,
+      "gpt-4o": 128000,
+    };
+  }
+
+  // Utility: estimate token count (roughly 4 chars ≈ 1 token for English text)
+  estimateTokens(text) {
+    return Math.ceil((text || "").length / 4);
   }
 
   async generateResponse(question, context, options = {}) {
     const {
       model = process.env.OPENROUTER_MODEL || "anthropic/claude-3.5-sonnet",
-      maxTokens = 2000,
       temperature = 0.7,
       systemPrompt = "You are an AI that helps summarize and answer questions about PDF documents using provided content. Be concise and cite page numbers if known.",
     } = options;
 
     try {
-      // Development-friendly fallback: if no API key is configured, return a mock response
+      // Development-friendly fallback: if no API key is configured
       const apiKey = process.env.OPENROUTER_API_KEY;
       if (!apiKey) {
         const preview = (context || "").slice(0, 600).trim();
-        const answer = `OPENROUTER_API_KEY is not configured on the server. Returning a mock response for development.\n\nQuestion: ${question}\n\nContext preview (first 600 chars):\n${preview}`;
+        const answer = `OPENROUTER_API_KEY is not configured. Mock response:\n\nQuestion: ${question}\n\nContext preview:\n${preview}`;
         return {
           answer,
           citations: this.extractCitations(answer),
@@ -41,15 +51,29 @@ class AIService {
         };
       }
 
+      // Estimate input tokens
+      const inputText = `${systemPrompt} ${context.slice(
+        0,
+        12000
+      )} ${question}`;
+      const inputTokens = this.estimateTokens(inputText);
+
+      // Get model max context length
+      const maxContext = this.modelLimits[model] || 8000; // fallback if unknown
+
+      // Leave buffer to avoid errors
+      const reserve = 1000;
+      const safeMaxTokens = Math.max(1, maxContext - inputTokens - reserve);
+
+      console.log(`🔢 Input tokens: ${inputTokens}`);
+      console.log(`🛡️ Safe max_tokens: ${safeMaxTokens}`);
+
       const response = await axios.post(
         `${this.providers.openrouter.baseURL}/chat/completions`,
         {
           model,
           messages: [
-            {
-              role: "system",
-              content: systemPrompt,
-            },
+            { role: "system", content: systemPrompt },
             {
               role: "user",
               content: `Use this context to answer the question:\n\n${context.slice(
@@ -58,7 +82,7 @@ class AIService {
               )}\n\nQuestion: ${question}`,
             },
           ],
-          max_tokens: maxTokens,
+          max_tokens: safeMaxTokens,
           temperature,
         },
         {
@@ -66,18 +90,15 @@ class AIService {
             ...this.providers.openrouter.headers,
             Authorization: `Bearer ${apiKey}`,
           },
-          timeout: 30000, // 30 second timeout
+          timeout: 30000, // 30 sec
         }
       );
 
       const answer = response.data.choices[0].message.content;
 
-      // Extract page citations
-      const citations = this.extractCitations(answer);
-
       return {
         answer,
-        citations,
+        citations: this.extractCitations(answer),
         model,
         usage: response.data.usage || null,
       };
@@ -93,21 +114,15 @@ class AIService {
 
   /**
    * Extract page citations from AI response
-   * @param {string} text - AI response text
-   * @returns {Array<number>} Array of page numbers
    */
   extractCitations(text) {
     const pageRegex = /page (\d+)/gi;
     const citations = [...text.matchAll(pageRegex)].map((match) =>
       parseInt(match[1])
     );
-    return [...new Set(citations)]; // Remove duplicates
+    return [...new Set(citations)];
   }
 
-  /**
-   * Get available models (for future use)
-   * @returns {Promise<Array>} List of available models
-   */
   async getAvailableModels() {
     try {
       const response = await axios.get(
@@ -126,10 +141,6 @@ class AIService {
     }
   }
 
-  /**
-   * Validate API key
-   * @returns {Promise<boolean>} Whether API key is valid
-   */
   async validateAPIKey() {
     try {
       await this.getAvailableModels();
